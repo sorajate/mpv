@@ -87,6 +87,7 @@ extern const struct m_sub_options ao_conf;
 
 extern const struct m_sub_options opengl_conf;
 extern const struct m_sub_options vulkan_conf;
+extern const struct m_sub_options vulkan_display_conf;
 extern const struct m_sub_options spirv_conf;
 extern const struct m_sub_options d3d11_conf;
 extern const struct m_sub_options d3d11va_conf;
@@ -197,6 +198,7 @@ const struct m_sub_options vo_sub_opts = {
         .snap_window = 0,
         .border = 1,
         .fit_border = 1,
+        .appid = "mpv",
         .WinID = -1,
         .window_scale = 1.0,
         .x11_bypass_compositor = 2,
@@ -236,6 +238,7 @@ const struct m_sub_options mp_subtitle_sub_opts = {
         {"sub-fps", OPT_FLOAT(sub_fps)},
         {"sub-speed", OPT_FLOAT(sub_speed)},
         {"sub-visibility", OPT_FLAG(sub_visibility)},
+        {"secondary-sub-visibility", OPT_FLAG(sec_sub_visibility)},
         {"sub-forced-only", OPT_CHOICE(forced_subs_only,
             {"auto", -1}, {"no", 0}, {"yes", 1})},
         {"stretch-dvd-subs", OPT_FLAG(stretch_dvd_subs)},
@@ -273,11 +276,13 @@ const struct m_sub_options mp_subtitle_sub_opts = {
         {"sub", OPT_SUBSTRUCT(sub_style, sub_style_conf)},
         {"sub-clear-on-seek", OPT_FLAG(sub_clear_on_seek)},
         {"teletext-page", OPT_INT(teletext_page), M_RANGE(1, 999)},
+        {"sub-past-video-end", OPT_FLAG(sub_past_video_end)},
         {0}
     },
     .size = sizeof(OPT_BASE_STRUCT),
     .defaults = &(OPT_BASE_STRUCT){
         .sub_visibility = 1,
+        .sec_sub_visibility = 1,
         .forced_subs_only = -1,
         .sub_pos = 100,
         .sub_speed = 1.0,
@@ -592,7 +597,7 @@ static const m_option_t mp_opts[] = {
     {"audio-file-auto", OPT_CHOICE(audiofile_auto,
         {"no", -1}, {"exact", 0}, {"fuzzy", 1}, {"all", 2})},
     {"cover-art-auto", OPT_CHOICE(coverart_auto,
-        {"no", -1}, {"fuzzy", 1})},
+        {"no", -1}, {"exact", 0}, {"fuzzy", 1}, {"all", 2})},
 
     {"", OPT_SUBSTRUCT(subs_rend, mp_subtitle_sub_opts)},
     {"", OPT_SUBSTRUCT(subs_filt, mp_sub_filter_opts)},
@@ -779,6 +784,7 @@ static const m_option_t mp_opts[] = {
 
 #if HAVE_VULKAN
     {"", OPT_SUBSTRUCT(vulkan_opts, vulkan_conf)},
+    {"", OPT_SUBSTRUCT(vulkan_display_opts, vulkan_display_conf)},
 #endif
 
 #if HAVE_D3D11

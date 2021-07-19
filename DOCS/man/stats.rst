@@ -24,7 +24,8 @@ stats:
 1      Show usual stats
 2      Show frame timings (scroll)
 3      Input cache stats
-4      Internal stuff (scroll)
+4      Active key bindings (scroll)
+0      Internal stuff (scroll)
 ====   ==================
 
 On pages which support scroll, these key bindings are also active:
@@ -66,6 +67,8 @@ Configurable Options
     Default: 3
 ``key_page_4``
     Default: 4
+``key_page_0``
+    Default: 0
 
     Key bindings for page switching while stats are displayed.
 
@@ -182,6 +185,26 @@ Using ``input.conf``, it is also possible to directly display a certain page::
 
     i script-binding stats/display-page-1
     e script-binding stats/display-page-2
+
+Active key bindings page
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Lists the active key bindings and the commands they're bound to, excluding the
+interactive keys of the stats script itself. See also `--input-test`_ for more
+detailed view of each binding.
+
+The keys are grouped automatically using a simple analysis of the command
+string, and one should not expect documentation-level grouping accuracy,
+however, it should still be reasonably useful.
+
+Using ``--idle --script-opts=stats-bindlist=yes`` will print the list to the
+terminal and quit immediately. By default long lines are shortened to 79 chars,
+and terminal escape sequences are enabled. A different length limit can be
+set by changing ``yes`` to a number (at least 40), and escape sequences can be
+disabled by adding ``-`` before the value, e.g. ``...=-yes`` or ``...=-120``.
+
+Like with ``--input-test``, the list includes bindings from ``input.conf`` and
+from user scripts. Use `--no-config`` to list only built-in bindings.
 
 Internal stuff page
 ~~~~~~~~~~~~~~~~~~~

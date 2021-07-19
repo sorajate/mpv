@@ -19,6 +19,7 @@ local o = {
     key_page_2 = "2",
     key_page_3 = "3",
     key_page_4 = "4",
+    key_page_0 = "0",
     -- For pages which support scrolling
     key_scroll_up = "UP",
     key_scroll_down = "DOWN",
@@ -77,6 +78,8 @@ local o = {
     no_ass_b0 = "\027[0m",
     no_ass_it1 = "\027[3m",
     no_ass_it0 = "\027[0m",
+
+    bindlist = "no",  -- print page 4 to the terminal on startup and quit mpv
 }
 options.read_options(o)
 
@@ -351,6 +354,132 @@ local function append_perfdata(s, dedicated_page)
     end
 end
 
+local function ellipsis(s, maxlen)
+    if not maxlen or s:len() <= maxlen then return s end
+    return s:sub(1, maxlen - 3) .. "..."
+end
+
+-- command prefix tokens to strip - includes generic property commands
+local cmd_prefixes = {
+    osd_auto=1, no_osd=1, osd_bar=1, osd_msg=1, osd_msg_bar=1, raw=1, sync=1,
+    async=1, expand_properties=1, repeatable=1, set=1, add=1, multiply=1,
+    toggle=1, cycle=1, cycle_values=1, ["!reverse"]=1, change_list=1,
+}
+-- commands/writable-properties prefix sub-words (followed by -) to strip
+local name_prefixes = {
+    define=1, delete=1, enable=1, disable=1, dump=1, write=1, drop=1, revert=1,
+    ab=1, hr=1, secondary=1,
+}
+-- extract a command "subject" from a command string, by removing all
+-- generic prefix tokens and then returning the first interesting sub-word
+-- of the next token. For target-script name we also check another token.
+-- The tokenizer works fine for things we care about - valid mpv commands,
+-- properties and script names, possibly quoted, white-space[s]-separated.
+-- It's decent in practice, and worst case is "incorrect" subject.
+local function cmd_subject(cmd)
+    cmd = cmd:gsub(";.*", ""):gsub("%-", "_")  -- only first cmd, s/-/_/
+    local TOKEN = '^%s*"?([%w_!]*)'  -- captures+ends before a (maybe) final "
+    local tok, sname, subw
+
+    repeat tok, cmd = cmd:match(TOKEN .. '"?(.*)')
+    until not cmd_prefixes[tok]
+    -- tok is the 1st non-generic command/property name token, cmd is the rest
+
+    sname = tok == "script_message_to" and cmd:match(TOKEN)
+         or tok == "script_binding" and cmd:match(TOKEN .. "/")
+    if sname and sname ~= "" then
+        return "script: " .. sname
+    end
+
+    -- return the first sub-word of tok which is not a useless prefix
+    repeat subw, tok = tok:match("([^_]*)_?(.*)")
+    until tok == "" or not name_prefixes[subw]
+    return subw:len() > 1 and subw or "[unknown]"
+end
+
+local function get_kbinfo_lines(width)
+    -- active keys: only highest priotity of each key, and not our (stats) keys
+    local bindings = mp.get_property_native("input-bindings", {})
+    local active = {}  -- map: key-name -> bind-info
+    for _, bind in pairs(bindings) do
+        if bind.priority >= 0 and (
+               not active[bind.key] or
+               (active[bind.key].is_weak and not bind.is_weak) or
+               (bind.is_weak == active[bind.key].is_weak and
+                bind.priority > active[bind.key].priority)
+           ) and not bind.cmd:find("script-binding stats/__forced_", 1, true)
+        then
+            active[bind.key] = bind
+        end
+    end
+
+    -- make an array, find max key len, add sort keys (.subject/.mods[_count])
+    local ordered = {}
+    local kspaces = ""  -- as many spaces as the longest key name
+    for _, bind in pairs(active) do
+        bind.subject = cmd_subject(bind.cmd)
+        if bind.subject ~= "ignore" then
+            ordered[#ordered+1] = bind
+            _,_, bind.mods = bind.key:find("(.*)%+.")
+            _, bind.mods_count = bind.key:gsub("%+.", "")
+            if bind.key:len() > kspaces:len() then
+                kspaces = string.rep(" ", bind.key:len())
+            end
+        end
+    end
+
+    local function align_right(key)
+        return kspaces:sub(key:len()) .. key
+    end
+
+    -- sort by: subject, mod(ifier)s count, mods, key-len, lowercase-key, key
+    table.sort(ordered, function(a, b)
+        if a.subject ~= b.subject then
+            return a.subject < b.subject
+        elseif a.mods_count ~= b.mods_count then
+            return a.mods_count < b.mods_count
+        elseif a.mods ~= b.mods then
+            return a.mods < b.mods
+        elseif a.key:len() ~= b.key:len() then
+            return a.key:len() < b.key:len()
+        elseif a.key:lower() ~= b.key:lower() then
+            return a.key:lower() < b.key:lower()
+        else
+            return a.key > b.key  -- only case differs, lowercase first
+        end
+    end)
+
+    -- key/subject pre/post formatting for terminal/ass.
+    -- key/subject alignment uses spaces (with mono font if ass)
+    -- word-wrapping is disabled for ass, or cut at 79 for the terminal
+    local term = not o.use_ass
+    local kpre = term and "" or format("{\\q2\\fn%s}", o.font_mono)
+    local kpost = term and " " or format(" {\\fn%s}", o.font)
+    local spre = term and kspaces .. "   "
+                       or format("{\\q2\\fn%s}%s   {\\fn%s}{\\fs%d\\u1}",
+                                 o.font_mono, kspaces, o.font, 1.3*o.font_size)
+    local spost = term and "" or format("{\\u0\\fs%d}", o.font_size)
+    local _, itabs = o.indent:gsub("\t", "")
+    local cutoff = term and (width or 79) - o.indent:len() - itabs * 7 - spre:len()
+
+    -- create the display lines
+    local info_lines = {}
+    local subject = nil
+    for _, bind in ipairs(ordered) do
+        if bind.subject ~= subject then  -- new subject (title)
+            subject = bind.subject
+            append(info_lines, "", {})
+            append(info_lines, "", { prefix = spre .. subject .. spost })
+        end
+        if bind.comment then
+            bind.cmd = bind.cmd .. "  # " .. bind.comment
+        end
+        append(info_lines, ellipsis(bind.cmd, cutoff),
+               { prefix = kpre .. no_ASS(align_right(bind.key)) .. kpost })
+    end
+    return info_lines
+end
+
 local function append_general_perfdata(s, offset)
     local perf_info = mp.get_property_native("perf-info") or {}
     local count = 0
@@ -517,6 +646,10 @@ local function add_video(s)
         return
     end
 
+    local osd_dims = mp.get_property_native("osd-dimensions")
+    local scaled_width = osd_dims["w"] - osd_dims["ml"] - osd_dims["mr"]
+    local scaled_height = osd_dims["h"] - osd_dims["mt"] - osd_dims["mb"]
+
     append(s, "", {prefix=o.nl .. o.nl .. "Video:", nl="", indent=""})
     if append_property(s, "video-codec", {prefix_sep="", nl="", indent=""}) then
         append_property(s, "hwdec-current", {prefix="(hwdec:", nl="", indent=" ",
@@ -547,6 +680,9 @@ local function add_video(s)
 
     if append(s, r["w"], {prefix="Native Resolution:"}) then
         append(s, r["h"], {prefix="x", nl="", indent=" ", prefix_sep=" ", no_prefix_markup=true})
+    end
+    if append(s, scaled_width, {prefix="Scaled Resolution:"}) then
+        append(s, scaled_height, {prefix="x", nl="", indent=" ", prefix_sep=" ", no_prefix_markup=true})
     end
     append_property(s, "current-window-scale", {prefix="Window Scale:"})
     if r["aspect"] ~= nil then
@@ -658,11 +794,34 @@ local function vo_stats()
     return table.concat(stats)
 end
 
+local kbinfo_lines = nil
+local function keybinding_info(after_scroll)
+    local header = {}
+    local page = pages[o.key_page_4]
+    eval_ass_formatting()
+    add_header(header)
+    append(header, "", {prefix=o.nl .. page.desc .. ":", nl="", indent=""})
+
+    if not kbinfo_lines or not after_scroll then
+        kbinfo_lines = get_kbinfo_lines()
+    end
+    -- up to 20 lines for the terminal - so that mpv can also print
+    -- the status line without scrolling, and up to 40 lines for libass
+    -- because it can put a big performance toll on libass to process
+    -- many lines which end up outside (below) the screen.
+    local term = not o.use_ass
+    local nlines = #kbinfo_lines
+    page.offset = max(1, min((page.offset or 1), term and nlines - 20 or nlines))
+    local maxline = min(nlines, page.offset + (term and 20 or 40))
+    return table.concat(header) ..
+           table.concat(kbinfo_lines, "", page.offset, maxline)
+end
+
 local function perf_stats()
     local stats = {}
     eval_ass_formatting()
     add_header(stats)
-    local page = pages[o.key_page_4]
+    local page = pages[o.key_page_0]
     append(stats, "", {prefix=o.nl .. o.nl .. page.desc .. ":", nl="", indent=""})
     page.offset = append_general_perfdata(stats, page.offset)
     return table.concat(stats)
@@ -793,7 +952,8 @@ pages = {
     [o.key_page_1] = { f = default_stats, desc = "Default" },
     [o.key_page_2] = { f = vo_stats, desc = "Extended Frame Timings", scroll = true },
     [o.key_page_3] = { f = cache_stats, desc = "Cache Statistics" },
-    [o.key_page_4] = { f = perf_stats, desc = "Internal performance info", scroll = true },
+    [o.key_page_4] = { f = keybinding_info, desc = "Active key bindings", scroll = true },
+    [o.key_page_0] = { f = perf_stats, desc = "Internal performance info", scroll = true },
 }
 
 
@@ -831,11 +991,12 @@ local function record_data(skip)
 end
 
 -- Call the function for `page` and print it to OSD
-local function print_page(page)
+local function print_page(page, after_scroll)
     if o.persistent_overlay then
-        mp.set_osd_ass(0, 0, pages[page].f())
+        mp.set_osd_ass(0, 0, pages[page].f(after_scroll))
     else
-        mp.osd_message(pages[page].f(), display_timer.oneshot and o.duration or o.redraw_delay + 1)
+        mp.osd_message(pages[page].f(after_scroll),
+                       display_timer.oneshot and o.duration or o.redraw_delay + 1)
     end
 end
 
@@ -847,7 +1008,7 @@ end
 local function scroll_delta(d)
     if display_timer.oneshot then display_timer:kill() ; display_timer:resume() end
     pages[curr_page].offset = (pages[curr_page].offset or 1) + d
-    print_page(curr_page)
+    print_page(curr_page, true)
 end
 local function scroll_up() scroll_delta(-o.scroll_lines) end
 local function scroll_down() scroll_delta(o.scroll_lines) end
@@ -859,15 +1020,15 @@ local function reset_scroll_offsets()
 end
 local function bind_scroll()
     if not scroll_bound then
-        mp.add_forced_key_binding(o.key_scroll_up, o.key_scroll_up, scroll_up, {repeatable=true})
-        mp.add_forced_key_binding(o.key_scroll_down, o.key_scroll_down, scroll_down, {repeatable=true})
+        mp.add_forced_key_binding(o.key_scroll_up, "__forced_"..o.key_scroll_up, scroll_up, {repeatable=true})
+        mp.add_forced_key_binding(o.key_scroll_down, "__forced_"..o.key_scroll_down, scroll_down, {repeatable=true})
         scroll_bound = true
     end
 end
 local function unbind_scroll()
     if scroll_bound then
-        mp.remove_key_binding(o.key_scroll_up)
-        mp.remove_key_binding(o.key_scroll_down)
+        mp.remove_key_binding("__forced_"..o.key_scroll_up)
+        mp.remove_key_binding("__forced_"..o.key_scroll_down)
         scroll_bound = false
     end
 end
@@ -891,7 +1052,7 @@ local function add_page_bindings()
         end
     end
     for k, _ in pairs(pages) do
-        mp.add_forced_key_binding(k, k, a(k), {repeatable=true})
+        mp.add_forced_key_binding(k, "__forced_"..k, a(k), {repeatable=true})
     end
     update_scroll_bindings(curr_page)
 end
@@ -900,7 +1061,7 @@ end
 -- Remove keybindings for every page
 local function remove_page_bindings()
     for k, _ in pairs(pages) do
-        mp.remove_key_binding(k)
+        mp.remove_key_binding("__forced_"..k)
     end
     unbind_scroll()
 end
@@ -988,3 +1149,22 @@ mp.register_event("video-reconfig",
             print_page(curr_page)
         end
     end)
+
+--  --script-opts=stats-bindlist=[-]{yes|<TERM-WIDTH>}
+if o.bindlist ~= "no" then
+    mp.command("no-osd set really-quiet yes")
+    if o.bindlist:sub(1, 1) == "-" then
+        o.bindlist = o.bindlist:sub(2)
+        o.no_ass_b0 = ""
+        o.no_ass_b1 = ""
+    end
+    local width = max(40, math.floor(tonumber(o.bindlist) or 79))
+    mp.add_timeout(0, function()  -- wait for all other scripts to finish init
+        o.ass_formatting = false
+        o.no_ass_indent = " "
+        eval_ass_formatting()
+        io.write(pages[o.key_page_4].desc .. ":" ..
+                 table.concat(get_kbinfo_lines(width)) .. "\n")
+        mp.command("quit")
+    end)
+end
